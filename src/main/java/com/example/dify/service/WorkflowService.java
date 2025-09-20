@@ -1,15 +1,12 @@
 package com.example.dify.service;
 
+import com.example.dify.infra.DifyClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.MultipartBodyBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.reactive.function.BodyInserters;
-import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
@@ -19,13 +16,10 @@ import java.util.regex.Pattern;
 
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class WorkflowService {
 
-    @Value("${dify.api.key}")
-    private String apiKey;
-
-    @Value("${dify.api.base-url}")
-    private String baseUrl;
+    private final DifyClient difyClient;
 
     public Mono<DegreeDTO> executeOcrWorkflow(MultipartFile file) {
         return executeWorkflow(file)
@@ -34,52 +28,30 @@ public class WorkflowService {
     }
 
     private Mono<String> executeWorkflow(MultipartFile file) {
-        return uploadFile(file)
-                .flatMap(fileId -> {
-                    Map<String, Object> requestBody = new HashMap<>();
-                    Map<String, Object> inputs = new HashMap<>();
-                    Map<String, Object> fileInput = new HashMap<>();
-                    fileInput.put("type", "image");
-                    fileInput.put("transfer_method", "local_file");
-                    fileInput.put("upload_file_id", fileId);
-                    inputs.put("files", fileInput);
-                    requestBody.put("inputs", inputs);
-                    requestBody.put("response_mode", "blocking");
-                    requestBody.put("user", "abc-123");
+        return difyClient.uploadFile(file)
+                .flatMap(fileResponse -> {
                     try {
-                        return WebClient.create()
-                                .post()
-                                .uri(baseUrl + "/workflows/run")
-                                .header("Authorization", "Bearer " + apiKey)
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .bodyValue(requestBody)
-                                .retrieve()
-                                .bodyToMono(String.class);
+                        ObjectMapper mapper = new ObjectMapper();
+                        JsonNode fileJson = mapper.readTree(fileResponse);
+                        String fileId = fileJson.get("id").asText();
+
+                        Map<String, Object> requestBody = new HashMap<>();
+                        Map<String, Object> inputs = new HashMap<>();
+                        Map<String, Object> fileInput = new HashMap<>();
+                        fileInput.put("type", "image");
+                        fileInput.put("transfer_method", "local_file");
+                        fileInput.put("upload_file_id", fileId);
+                        inputs.put("files", fileInput);
+                        requestBody.put("inputs", inputs);
+                        requestBody.put("response_mode", "blocking");
+                        requestBody.put("user", "abc-123");
+
+                        return difyClient.runWorkflow(requestBody);
                     } catch (Exception e) {
                         log.error("Error executing workflow: " + e.getMessage());
                         return Mono.error(e);
                     }
                 });
-    }
-
-    private Mono<String> uploadFile(MultipartFile file) {
-        MultipartBodyBuilder builder = new MultipartBodyBuilder();
-        builder.part("file", file.getResource());
-
-        try {
-            return WebClient.create()
-                    .post()
-                    .uri(baseUrl + "/files/upload")
-                    .header("Authorization", "Bearer " + apiKey)
-                    .contentType(MediaType.MULTIPART_FORM_DATA)
-                    .body(BodyInserters.fromMultipartData(builder.build()))
-                    .retrieve()
-                    .bodyToMono(Map.class)
-                    .map(response -> (String) response.get("id"));
-        } catch (Exception e) {
-            log.error("Error uploading file: " + e.getMessage());
-            return Mono.error(e);
-        }
     }
 
     private Mono<DegreeDTO> parseAndMapToDegreeDTO(String jsonResponse) {
